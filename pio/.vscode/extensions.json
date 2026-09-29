@@ -1,0 +1,9 @@
+{
+    "recommendations": [
+        "pioarduino.pioarduino-ide"
+    ],
+    "unwantedRecommendations": [
+        "ms-vscode.cpptools-extension-pack",
+        "platformio.platformio-ide"
+    ]
+}

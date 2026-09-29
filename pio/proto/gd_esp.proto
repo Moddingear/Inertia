@@ -1,0 +1,61 @@
+// Godot to esp32 protocol
+// Protobuf Format
+syntax = "proto3";
+
+message Position2D {
+  float X = 1; //Position in meters, 0 at center, long table axis, -1.5 to 1.5
+  float Y = 2; //Position in meters, 0 at center, short table axis, -1 to 1
+  float R = 3; //Rotation in radians, 0 when forward is X+
+  enum Type {
+	Target = 0; //Set target position of robot
+	Actual = 1; //Set position of robot
+	VelocityTarget = 2;
+  }
+  Type postype = 4;
+
+}
+
+message PIDData {
+	enum Loop {
+		None=0; 
+		Current_D=1;	//Direct current for BLDC
+		Current_Q=2;	//Quadrature current for BLDC
+		Current=3; 		//Generic current
+		Velocity=8;		//Generic velocity
+		Velocity_X=9;	//Odometry velocity X
+		Velocity_Y=10;	//Odometry velocity Y
+		Angle=16;		//Generic angle / Odometry angle 
+		Position=17;	//Generic linear position
+		Position_X=18;	//Odometry position X
+		Position_Y=19;	//Odometry position Y
+	}
+	Loop loop_id = 1;	
+	oneof source {
+	  int32 motor_index = 2;
+	  string name = 3;
+	}
+	
+
+	message values {
+		float P = 1;
+		float I = 2;
+		float D = 3;
+		float limit = 4;
+		float ramp = 5;
+		float low_pass = 6;
+	}
+	optional values settings = 4;
+}
+
+message CANData {
+	uint32 id = 1;
+	bytes data = 2;
+}
+
+message gd_esp_packet {
+  oneof data {
+	PIDData PID = 1;
+	Position2D pos = 2;
+	CANData canbus = 3;
+  }
+}
