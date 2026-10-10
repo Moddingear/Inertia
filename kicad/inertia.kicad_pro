@@ -63,7 +63,7 @@
           "min_clearance": 0.1,
           "min_island_area": 10.0,
           "min_thickness": 0.25,
-          "pad_connection": 1,
+          "pad_connection": 0,
           "remove_islands": 0,
           "thermal_relief_gap": 0.5,
           "thermal_relief_spoke_width": 0.5
@@ -674,16 +674,16 @@
       {
         "filename": "inertia.kicad_sch",
         "name": "inertia",
-        "uuid": "00000000-0000-0000-0000-000000000000"
+        "uuid": "17783b7a-f459-4378-b3b3-5cb783e1a3c5"
       }
     ],
-    "used_designators": "",
+    "used_designators": "SW2-3,TP1,JP1,D7,C2,J1,J4-5,J11-12,#PWR3-4,#PWR8,#PWR22,#PWR34-41,#PWR63-71,JCAN2,U1,U4-5,H4-9",
     "variants": []
   },
   "sheets": [
     [
       "17783b7a-f459-4378-b3b3-5cb783e1a3c5",
-      "Root"
+      "inertia"
     ],
     [
       "46e66be7-59c8-4ccd-ae71-8810bc9072c0",
