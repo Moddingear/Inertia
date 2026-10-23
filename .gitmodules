@@ -1,0 +1,12 @@
+[submodule "pio/lib/enet"]
+	path = pio/lib/enet
+	url = git@github.com:Moddingear/enet.git
+[submodule "pio/lib/RobotCANProtocol"]
+	path = pio/lib/RobotCANProtocol
+	url = git@github.com:Moddingear/RobotCANProtocol.git
+[submodule "pio/lib/ComplexCAN"]
+	path = pio/lib/ComplexCAN
+	url = git@github.com:Moddingear/ComplexCAN.git
+[submodule "pio/lib/RMTRGB"]
+	path = pio/lib/RMTRGB
+	url = git@github.com:Moddingear/RMTRGB.git
