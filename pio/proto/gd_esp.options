@@ -1,0 +1,5 @@
+NetworkMap.discriminators	max_size:64
+MotorIdentification.name	max_size:64
+LidarData.lidar_source		max_size:32
+LidarData.points			max_count:0, fixed_count:1
+LidarData.raw				max_size:256

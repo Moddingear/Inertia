@@ -3,16 +3,15 @@
 syntax = "proto3";
 
 message Position2D {
-  float X = 1; //Position in meters, 0 at center, long table axis, -1.5 to 1.5
-  float Y = 2; //Position in meters, 0 at center, short table axis, -1 to 1
-  float R = 3; //Rotation in radians, 0 when forward is X+
-  enum Type {
-	Target = 0; //Set target position of robot
-	Actual = 1; //Set position of robot
-	VelocityTarget = 2;
-  }
-  Type postype = 4;
-
+	float X = 1; //Position in meters, 0 at center, long table axis, -1.5 to 1.5
+	float Y = 2; //Position in meters, 0 at center, short table axis, -1 to 1
+	float R = 3; //Rotation in radians, 0 when forward is X+
+	enum Type {
+		Target = 0; //Set target position of robot
+		Actual = 1; //Set position of robot
+		VelocityTarget = 2;
+	}
+	Type postype = 4;
 }
 
 message PIDData {
@@ -48,14 +47,47 @@ message PIDData {
 }
 
 message CANData {
-	uint32 id = 1;
-	bytes data = 2;
+	oneof accessor {
+		uint32 id = 1;
+		uint32 discriminator = 2;
+		string name = 3;
+	}
+	bytes data = 4;
+}
+
+message NetworkMap {
+	bytes discriminators = 1;
+}
+
+message MotorIdentification {
+	int32 discriminator = 1;
+	string name = 2;
+}
+
+message BootloaderJump {
+	uint32 discriminator = 1;
+}
+
+message LidarData {
+	string lidar_source = 1;
+	float start_angle = 2;
+	float end_angle = 3;
+	message LidarPoint {
+		uint32 distance = 1;
+		uint32 luminosity = 2;
+	}
+	repeated LidarPoint points = 4;
+	bytes raw = 5;
 }
 
 message gd_esp_packet {
-  oneof data {
-	PIDData PID = 1;
-	Position2D pos = 2;
-	CANData canbus = 3;
-  }
+	oneof data {
+		PIDData PID = 1;
+		Position2D pos = 2;
+		CANData can_data = 3;
+		NetworkMap network_map = 4;
+		LidarData lidar_data = 5;
+		BootloaderJump bootloader_jump = 16;
+		MotorIdentification motor_identification = 17;
+	}
 }

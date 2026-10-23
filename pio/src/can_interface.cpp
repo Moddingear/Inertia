@@ -1,175 +1,200 @@
 
 #include <Arduino.h>
-#include <driver/twai.h>
 #include <CANRobot.hpp>
 #include <can_interface.hpp>
 #include <map>
+#ifdef ComplexCAN
+#include <ComplexCAN_ESP32.h>
+#else
+#include <esp_twai.h>
+#include <esp_twai_onchip.h>
+#include <freertos/ringbuf.h>
+#endif
 
-#define CAN_TX 36
-#define CAN_RX 35
-#define CAN_SD 37
+#define CAN_TX GPIO_NUM_36
+#define CAN_RX GPIO_NUM_35
+#define CAN_SD GPIO_NUM_37
 
-struct motor
-{
-	uint16_t discriminator;
-	uint64_t last_transmission;
+
+
+static std::map<RobotCAN::PacketType, std::pair<can_if::OnReceiveCallback, uint8_t>> CallbackMap;
+ComplexCan_ESP32 CanInstance(CAN_TX, CAN_RX);
+
+FilterDefinition filter[] ={
+{ //accept only us
+	.FilterIndex = 0,
+	.FilterType = CAN_FILTER_MASK,
+	.FilterConfig = CAN_FILTER_TO_RXFIFO0,
+	.ExtendedID = false,
+	.FilterID2 = RobotCAN::hub_mask_std,
+},
+{ //accept only us
+	.FilterIndex = 0,
+	.FilterType = CAN_FILTER_MASK,
+	.FilterConfig = CAN_FILTER_TO_RXFIFO0,
+	.ExtendedID = true,
+	.FilterID2 = RobotCAN::hub_mask_extd,
+},
 };
 
-
-std::vector<motor> motors;
-
-std::map<RobotCAN::PacketType, std::pair<can_if::OnReceiveCallback, uint8_t>> CallbackMap;
-
-void OnReceive(const twai_message_t packet)
+void OnReceive(const ComplexCanRxHeader &rxHeader, const uint8_t *rxData, void* userData)
 {
-	if (packet.data_length_code < sizeof(RobotCAN::PacketType))
+	if (rxHeader.DataLength < sizeof(RobotCAN::PacketType) && !rxHeader.ExtendedID)
 	{
+		printf("Received a message that is too short.\n");
 		return;
 	}
-	auto type = *reinterpret_cast<const RobotCAN::PacketType*>(&packet.data[0]);
-    auto entry = CallbackMap.find(type);
-    if (entry == CallbackMap.end())
-    {
-        printf("Missing callback for packet type %d on CAN\n", type);
-
-    }
-    if (packet.data_length_code < entry->second.second)
-    {
-        printf("Packet too small for %d on CAN (%d)\n", type, packet.data_length_code);
-    }
-    entry->second.first(packet);
-    #if 0
-	switch (type)
+	RobotCAN::PacketType type;
+	uint8_t actual_length;
+	if (rxHeader.ExtendedID)
 	{
-	case RobotCAN::PacketType::HELLO :
-		if (packet.data_length_code == sizeof(RobotCAN::hello_packet))
-		{
-			auto message = reinterpret_cast<const RobotCAN::hello_packet*>(packet.data);
-			uint16_t discriminator = message->discriminator;
-			size_t i;
-			for (i = 0; i < motors.size(); i++)
-			{
-				if (motors[i].discriminator == discriminator)
-				{
-					break;
-				}
-			}
-			if (i == motors.size())
-			{
-				motor new_motor;
-				new_motor.discriminator = discriminator;
-				new_motor.last_transmission = millis();
-				motors.push_back(new_motor);
-				last_new_motor_time = millis();
-				printf("Enumeration : Got a motor with discriminator %d\n", discriminator);
-			}
-			else
-			{
-				motors[i].last_transmission = millis();
-			}
-			
-		}
-		break;
-	case RobotCAN::PacketType::MOTOR_FEEDBACK :
-		if (packet.data_length_code == sizeof(RobotCAN::Motor_feedback))
-		{
-			auto message = reinterpret_cast<const RobotCAN::Motor_feedback*>(packet.data);
-			//printf("Feedback from motor, angle %frad, temperature %fdegC, current %dcA\n", message->angle, message->temperature/2.f, message->current);
-		}
-		break;
-	default:
-		printf("Got an unknown packet, identifier %#d\n", packet.identifier);
-		break;
+		RobotCAN::ID_extended header = rxHeader.Identifier;
+		type = header.packet_type;
+		actual_length = rxHeader.DataLength;
 	}
-    #endif
+	else
+	{
+		type = static_cast<RobotCAN::PacketType>(rxData[0]);
+		actual_length = rxHeader.DataLength-1;
+	}
+	auto entry = CallbackMap.find(type);
+	if (entry == CallbackMap.end())
+	{
+		printf("Missing callback for packet type %d on CAN (identifier %#x)\n", type, rxHeader.Identifier);
+		return;
+	}
+	if (actual_length < entry->second.second)
+	{
+		printf("Packet too small for %d on CAN (%d)\n", type, actual_length);
+		return;
+	}
+	entry->second.first(rxHeader, &rxData[1-rxHeader.ExtendedID]);
 }
 
-void can_send(uint32_t id, void* data, uint8_t length, bool single_shot = false)
+void can_if::send(uint32_t id, void* data, uint8_t length, bool single_shot)
 {
-	twai_message_t message;
-	memset(&message, 0, sizeof(message));
-	message.identifier = id;
-	memcpy(message.data, data, length);
-	message.data_length_code = length;
-	message.ss = single_shot;
-	auto err = twai_transmit(&message, portMAX_DELAY);
-	if (err != ESP_OK)
+	CanInstance.SendMessage(reinterpret_cast<uint8_t*>(data), length, id, true);
+}
+
+void can_if::request(uint32_t id, uint8_t expected_length, bool single_shot)
+{
+	CanInstance.RequestMessage(expected_length, id, true);
+}
+
+//key is identifier, value is data
+static std::map<uint8_t, std::vector<uint8_t>> fractionnal_packet_buffer;
+
+bool OnFraction(const ComplexCanRxHeader &rxHeader, const uint8_t *rxData)
+{
+	if (!rxHeader.ExtendedID)
 	{
-		printf("CAN Send fail : %s", esp_err_to_name(err));
+		return false;
 	}
 	
+	auto header = RobotCAN::ID_extended(rxHeader.Identifier);
+	uint8_t key = header.motor_index;
+	auto &entry = fractionnal_packet_buffer[key];
+	if (header.packet_index == 0)
+	{
+		entry.resize(0);
+		entry.reserve(rxData[0]*8-1);
+	}
+	for (size_t i = header.packet_index == 0 ? 1 : 0; i < rxHeader.DataLength; i++)
+	{
+		entry.push_back(rxData[i]);
+	}
+	if (entry.capacity() - entry.size() < 8)
+	{
+		ComplexCanRxHeader fake_frame = rxHeader;
+		fake_frame.DataLength = entry.size()-1;
+		header.packet_type = static_cast<RobotCAN::PacketType>(entry.at(0));
+		fake_frame.Identifier = header;
+		OnReceive(fake_frame, &entry.at(1), nullptr);
+		fractionnal_packet_buffer.erase(key);
+	}
+	return true;
 }
 
 void can_if::setup()
 {
-    pinMode(CAN_SD, OUTPUT);
+	pinMode(CAN_SD, OUTPUT);
 	pinMode(CAN_TX, OUTPUT);
 	pinMode(CAN_RX, INPUT);
 	digitalWrite(CAN_SD, LOW);
-	//gpio_dump_io_configuration(stdout, (1ULL<<2) | (3ULL<<43));
-	//Serial.begin(115200);
-	// Initialize configuration structures using macro initializers
-	twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)CAN_TX, (gpio_num_t)CAN_RX, TWAI_MODE_NORMAL);
-	//g_config.bus_off_io = GPIO_NUM_2;
-	twai_timing_config_t t_config = TWAI_TIMING_CONFIG_250KBITS();
+
+	#ifdef ComplexCAN
+	CanInstance.Init(1000000, 5000000);
+	filter[0].FilterID1 = RobotCAN::ID_standard(0, HUB_INDEX, true, false);
+	filter[1].FilterID1 = RobotCAN::ID_extended(0, static_cast<RobotCAN::PacketType>(0), 0, HUB_INDEX, true, 0);
+	for (size_t i = 0; i < sizeof(filter)/sizeof(filter[0]); i++)
+	{
+		auto status = CanInstance.ConfigFilter(&filter[i]);
+		printf("Filter %d status %d (%#x # %#x)\n", i, status, filter[i].FilterID1, filter[i].FilterID2);
+	}
+	CanInstance.ConfigGlobalFilter();
+	CanInstance.ActivateNotification(OnReceive, nullptr);
+	CanInstance.Start();
+	#else
+	rx_queue = xRingbufferCreateNoSplit(sizeof(twai_listener_data_t), 32);
+	if (rx_queue == NULL) {
+        printf("Failed to create ring buffer\n");
+    }
+
 	twai_filter_config_t f_config;
-	f_config.acceptance_code = UINT16_MAX << 16;
-	f_config.acceptance_mask = UINT32_MAX;
+	f_config.acceptance_code = (static_cast<uint32_t>(RobotCAN::IDOffset::prio_hub) << 16) | static_cast<uint32_t>(RobotCAN::IDOffset::to_hub);
+	f_config.acceptance_mask = (static_cast<uint32_t>(RobotCAN::hub_mask) << 16) | RobotCAN::hub_mask;
 	f_config.single_filter = false;
 
-	// Install TWAI driver
-	if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
-		printf("CAN Driver installed\n");
-	} else {
-		printf("Failed to install driver\n");
-		return;
-	}
+	twai_onchip_node_config_t node_config = {
+		.io_cfg = {
+			.tx = CAN_TX,
+			.rx = CAN_RX,
+			.quanta_clk_out = GPIO_NUM_NC,
+			.bus_off_indicator = GPIO_NUM_NC,
+		},
+		.bit_timing = {
+			.bitrate = 1000000,
+		},
+		.fail_retry_cnt = 3,
+		.tx_queue_depth = 10,
+	};
+	ESP_ERROR_CHECK(twai_new_node_onchip(&node_config, &can_handle));
 
-	// Start TWAI driver
-	if (twai_start() == ESP_OK) {
-		printf("CAN Driver started\n");
-	} else {
-		printf("Failed to start driver\n");
-		return;
-	}
-	//last_new_motor_time = millis();
+	twai_event_callbacks_t callbacks = {
+		.on_tx_done = twai_tx_callback,
+		.on_rx_done = twai_rx_callback,
+		.on_state_change = twai_on_state_change_callback,
+		.on_error = twai_on_error_callback,
+	};
+	ESP_ERROR_CHECK(twai_node_register_event_callbacks(can_handle, &callbacks, NULL));
+	ESP_ERROR_CHECK(twai_node_enable(can_handle));
+	#endif
+
+	printf("CAN Driver installed\n");
+
+	register_callback(RobotCAN::PacketType::FRACTION, OnFraction, 1);
 }
 
 void can_if::loop()
 {
-    #if 1
-	
-	while(1)
+	#ifdef ComplexCAN
+	CanInstance.Loop();
+	#else
+	for (;;)
 	{
-		twai_message_t message;
-		auto err = twai_receive(&message, 0);
-		if (err == ESP_OK)
-		{
-			OnReceive(message);
-		}
-		else
+		size_t length;
+		twai_listener_data_t *message = reinterpret_cast<twai_listener_data_t*>(xRingbufferReceive(rx_queue, &length, 0));
+		if (message == nullptr)
 		{
 			break;
 		}
-		
+		message->frame.buffer = message->data;
+		OnReceive(message->frame);
+		vRingbufferReturnItem(rx_queue, message);
 	}
-	
-	#else
-	CanInstance->Loop();
 	#endif
 
-
-    #if 0
-	if (last_new_motor_time + 6000 < millis() && !foc_inited)
-	{
-		printf("Starting FOC...\n");
-		for (auto &&i : motors)
-		{
-			auto message = RobotCAN::PacketType::INIT_FOC;
-			can_send(i.discriminator, &message,  sizeof(message));
-		}
-		foc_inited = true;
-	}
+	#if 0
 	//not connected, or button no longer held
 	if (true)
 	{
@@ -233,10 +258,10 @@ void can_if::loop()
 		}
 		
 	}
-    #endif
+	#endif
 }
 
 void can_if::register_callback(RobotCAN::PacketType type, OnReceiveCallback function, uint8_t min_length)
 {
-    CallbackMap[type] = {function, min_length};
+	CallbackMap[type] = {function, min_length};
 }
